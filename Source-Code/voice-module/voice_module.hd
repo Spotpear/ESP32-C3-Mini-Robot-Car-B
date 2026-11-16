@@ -1,0 +1,264 @@
+/*============================================================================
+ * 桌面机器人 · 天问 ASR PRO2.0 语音识别端源码【English / 英文版】
+ * 天问Block「专业模式 / 字符编程」
+ *
+ * 本文件是 ASRPRO2_Voice\main.c（中文版）的英文镜像，两者二选一烧录：
+ *   ASRPRO2_Voice\main.c    中文唤醒词 + 中文命令词 + 中文播报
+ *   ASRPRO2_Voice_EN\main.c 英文唤醒词 + 英文命令词 + 英文播报   ← 本文件
+ *
+ * 为什么必须做成两份独立工程（官方手册的硬约束）：
+ *   《ASRPRO 编程模式使用手册》：「播报英文时要设置成英文的男声或者女声，
+ *   同时不能和中文语音同时使用」；《配置模式使用手册》：「英文模式时输入的
+ *   文字内容不能包含汉字」。一个模型只能选一种音色，播报文本也必须全中文
+ *   或全英文，所以中英文词条不能混在同一个工程里。
+ *   本文件所有 ASR / ASRTO / playid 文本均为纯英文，音色为 Mia-英语女声。
+ *   注意 keyword 字段值「唤醒词」「命令词」是元数据标签（官方英文例程同样
+ *   写中文），不是语音内容，不需要也不能改成英文。
+ *
+ * 两端对齐（与中文版完全一致，ESP32-C3 侧 mochan.ino 不用改、不用重烧）：
+ *   识别标识 ID 0..27、命令码 '1''2''3''4''7''9''A''B''C'、
+ *   停止后 10 秒退下逻辑、串口参数，全部与中文版逐项相同。
+ *
+ * 作用：识别到命令词后，通过 UART 向 ESP32-C3（mochan.ino 的 GPIO4 / Serial1 RX）
+ *       发送 1 个命令字节。机器人端的动作全部由 ESP32-C3 执行，本端只发码。
+ *
+ * 使用方法：
+ *   1. 天问Block → 选择主板 ASR PRO（或 ASRPRO-Plus）→ 专业模式 / 字符编程
+ *   2. 用本文件覆盖/粘贴生成的 main.c
+ *   3. 点「生成模型」（会解析 setup() 里的 28 行词条元数据，约 1~3 分钟）
+ *      英文版改过音色与全部播报文本，必须重新生成模型，不能只点编译。
+ *      注意：不要在说明注释里写出元数据前缀字样，天问是逐行扫描的，
+ *      示例文本也会被当成词条解析（会报「ID 值需为整数」）。
+ *   4. 点「2M 编译下载」（ASR PRO2.0 一般是 2M 烧写模式）
+ *   5. 接线：模块 TX → ESP32-C3 GPIO4，GND ↔ GND 必须共地；模块 RX 可悬空
+ *      模块 IO 为 3.3V 电平，与 ESP32-C3 同压，可直接相连，无需电平转换
+ *      供电请独立给（识别/播报瞬间有电流尖峰），不要从 ESP32-C3 的 3V3 取电
+ *
+ * 串口选择（重要，按你实际接的那根 TX 改）：
+ *   - 默认 VOICE_PORT = Serial（UART0，TX=PB5 / RX=PB6），对应 setPinFun(13/14)。
+ *     绝大多数 ASR PRO2.0 模块丝印的 TXD/RXD 就是这一组，插上就能用。
+ *   - 若你的线接在串口1（ASRPRO-Plus 常用 PB7-TX1 / PC0-RX1，setPinFun 15/16），
+ *     把 VOICE_PORT 改成 Serial1，并同步替换 hardware_init() 里的两行 setPinFun。
+ *   - 串口0 同时是 USB 下载口，下载程序时建议先断开与 ESP32-C3 的连线。
+ *
+ * 头文件：本工程被编译成 asr.cpp（g++），Serial 对象定义在 HardwareSerial.h，
+ *   setup.h 不会间接包含它，所以必须按官方模板显式写出，否则报
+ *   "'Serial' was not declared in this scope"。
+ *
+ * 波特率：VOICE_BAUD = 9600，必须与 ESP32-C3 侧 mochan.ino 的 VOICE_BAUD 一致。
+ *
+ * 退下逻辑（仅在「停止」之后才启动 10 秒倒计时）：
+ *   收到 stop / do not move / halt → ASR_CODE() 设 STOP_SLEEP_MS(10 秒)；
+ *   这 10 秒内没有任何新口令 → 框架自动退出唤醒态并播报 playid 10002，
+ *   此后必须重新喊 hey robot / hello robot / hey buddy / hi desktop 才能下指令。
+ *   这 10 秒内只要说了任意口令 → 超时被重设为 KEEP_AWAKE_MS，倒计时取消，不退下。
+ *   其它一切口令（含 4 个唤醒词）都设 KEEP_AWAKE_MS，不会触发退下。
+ *   仍复用框架原生的唤醒超时状态机，不另建线程、不重复播报。
+ *============================================================================*/
+
+/* 天问Block「字符编程」官方模板的固定开头顺序，不要省略、不要调换 */
+#include "asr.h"
+extern "C" { void * __dso_handle = 0; }
+#include "setup.h"
+#include "HardwareSerial.h"        /* 必须：提供 Serial / Serial1 / Serial2 对象 */
+
+uint32_t snid;
+
+/* ---- 天问Block 元数据：播报音色、上电/退出提示音（不要删，模型靠它合成语音）----
+ * 英文模式必须选英文音色。Mia-英语女声 是官方英文例程
+ * 【花雕动手做 ASRPRO 语音识别(66) 英语语音识别开关 LED 灯】实际验证过的音色，
+ * 该例程的音色行参数为 vol 20 / speed 10 / platform haohaodada / version V3。
+ * 这里只把 vol 调回 10，与中文版保持一致；想换音色可在天问Block 图形化
+ * 「播报音设置」里挑一个英文音色，用软件生成的那一行整体替换本行。
+ * playid 与 ASRTO 文本必须全英文，不能出现汉字，否则 TTS 合成失败。
+ */
+//{speak:Mia-英语女声,vol:10,speed:10,platform:haohaodada,version:V3}
+//{playid:10001,voice:Hello. Say hey robot to wake me up}
+//{playid:10002,voice:I am going to rest. Wake me up to use me again}
+
+/* ---- 串口与波特率 ---- */
+#define VOICE_PORT   Serial
+#define VOICE_BAUD   9600
+
+/* ---- 退下倒计时（毫秒）----
+ * 天问的「设置唤醒退出时间」只能在 ASR_CODE() 中调用才有效，
+ * 且该机制无法关闭（官方手册：默认 15 秒，只能改时长，不能取消）。
+ * 因此用两个超时值表达「只有停止之后才退下」：
+ *   STOP_SLEEP_MS = 10 秒，仅停止类口令设置，到期自动退出并播报 playid 10002；
+ *   KEEP_AWAKE_MS = 1 小时，其它口令设置，等效于取消退下倒计时。
+ * 注意：框架不支持「永不超时」，KEEP_AWAKE_MS 只是长超时兜底；若实测该固件
+ *       不接受这个值，改成官方例程验证过的 200000（200 秒）即可，逻辑无需改动。
+ */
+#define STOP_SLEEP_MS    10000
+#define KEEP_AWAKE_MS    3600000
+
+/* 停止类词条的识别标识 ID 区间，对应 setup() 里的 ID 16/17/18 */
+#define STOP_CMD_ID_MIN  16
+#define STOP_CMD_ID_MAX  18
+
+/* ---- 命令码表：与 ESP32-C3 mochan.ino 的 enum VoiceCmd 一一对应 ------------
+ * 这里统一用「可打印 ASCII 字符」，故意避开 0x09(TAB) / 0x0A(LF) / 0x0D(CR)：
+ * 天问的「串口输出·字符」积木若勾了自动换行，换行符也不会被 ESP32 误判成指令。
+ * ESP32 端同时兼容旧版的十六进制 0x01..0x08（映射成 1..8），所以两种写法都能跑。
+ *
+ *   码      ESP32 动作          本端英文词条
+ *  '1'      前进                forward / move forward / come here
+ *  '2'      后退                backward / move back / go away
+ *  '3'      左转                turn left / go left / to the left
+ *  '4'      右转                turn right / go right / to the right
+ *  '5'      跳舞（原有）        保留，本端未使用
+ *  '6'      转圈（原有）        保留，本端未使用
+ *  '7'      扭一扭              wiggle / move a bit
+ *  '8'      退下·休眠（原有）   保留，本端未使用
+ *  '9'      停止                stop / do not move / halt
+ *  'A'      好奇模式开          curious mode / be curious / explore / wander around
+ *  'B'      好奇模式关          close curious mode / stop exploring
+ *  'C'      跳个舞（新增）      dance party
+ * -------------------------------------------------------------------------- */
+#define CMD_FORWARD       '1'
+#define CMD_BACK          '2'
+#define CMD_LEFT          '3'
+#define CMD_RIGHT         '4'
+#define CMD_WIGGLE        '7'
+#define CMD_STOP          '9'
+#define CMD_CURIOUS_ON    'A'
+#define CMD_CURIOUS_OFF   'B'
+#define CMD_PARTY         'C'
+
+void ASR_CODE();
+void hardware_init();
+
+/* 单字节发送：不组帧、不加换行，ESP32 端按「静默成帧」一次解析一个动作 */
+static void voice_send(int code) {
+  VOICE_PORT.write((uint8_t)code);      /* 只发 1 个字节，不组帧、不加换行 */
+}
+
+/*============================================================================
+ * 语音识别回调：每次识别成功自动调用一次，snid = setup() 里该词条的识别标识 ID
+ *============================================================================*/
+void ASR_CODE() {
+  /* 只有 stop / do not move / halt (ID 16..18) 才启动 10 秒退下倒计时。
+   * 本回调在每次识别成功时执行：停止后 10 秒内说出任意口令，都会走 else 分支
+   * 把超时改回 KEEP_AWAKE_MS，倒计时随即取消，不会误退下。
+   * 到期由框架自动退出唤醒并播报 playid 10002；本工程不要另行调用播报或
+   * 退出唤醒接口，否则退出提示音会重复播报。
+   */
+  bool afterStop = (snid >= STOP_CMD_ID_MIN && snid <= STOP_CMD_ID_MAX);
+  set_state_enter_wakeup(afterStop ? STOP_SLEEP_MS : KEEP_AWAKE_MS);
+
+  switch (snid) {
+    /* ---- 4 个唤醒词：ASRTO 会自动播报 "I am here"，不需要向 ESP32 发码 ---- */
+    case 0:  /* hey robot */     break;
+    case 1:  /* hello robot */   break;
+    case 2:  /* hey buddy */     break;
+    case 3:  /* hi desktop */    break;
+
+    /* ---- forward ---- */
+    case 4:  /* forward */       voice_send(CMD_FORWARD); break;
+    case 5:  /* move forward */  voice_send(CMD_FORWARD); break;
+    case 6:  /* come here */     voice_send(CMD_FORWARD); break;
+
+    /* ---- backward ---- */
+    case 7:  /* backward */      voice_send(CMD_BACK); break;
+    case 8:  /* move back */     voice_send(CMD_BACK); break;
+    case 9:  /* go away */       voice_send(CMD_BACK); break;
+
+    /* ---- turn left ---- */
+    case 10: /* turn left */     voice_send(CMD_LEFT); break;
+    case 11: /* go left */       voice_send(CMD_LEFT); break;
+    case 12: /* to the left */   voice_send(CMD_LEFT); break;
+
+    /* ---- turn right ---- */
+    case 13: /* turn right */    voice_send(CMD_RIGHT); break;
+    case 14: /* go right */      voice_send(CMD_RIGHT); break;
+    case 15: /* to the right */  voice_send(CMD_RIGHT); break;
+
+    /* ---- stop（这一组触发 10 秒退下倒计时）---- */
+    case 16: /* stop */          voice_send(CMD_STOP); break;
+    case 17: /* do not move */   voice_send(CMD_STOP); break;
+    case 18: /* halt */          voice_send(CMD_STOP); break;
+
+    /* ---- curious mode on ---- */
+    case 19: /* curious mode */     voice_send(CMD_CURIOUS_ON); break;
+    case 20: /* be curious */       voice_send(CMD_CURIOUS_ON); break;
+    case 21: /* explore */          voice_send(CMD_CURIOUS_ON); break;
+    case 22: /* wander around */    voice_send(CMD_CURIOUS_ON); break;
+
+    /* ---- curious mode off ---- */
+    case 23: /* close curious mode */ voice_send(CMD_CURIOUS_OFF); break;
+    case 24: /* stop exploring */     voice_send(CMD_CURIOUS_OFF); break;
+
+    /* ---- wiggle ---- */
+    case 25: /* wiggle */        voice_send(CMD_WIGGLE); break;
+    case 26: /* move a bit */    voice_send(CMD_WIGGLE); break;
+
+    /* ---- dance party（ESP32-C3 的独立舞蹈动作）---- */
+    case 27: /* dance party */   voice_send(CMD_PARTY); break;
+
+    default: break;
+  }
+}
+
+/*============================================================================
+ * 系统应用初始化（OS 启动后由框架调用）：串口在这里初始化
+ *============================================================================*/
+void hardware_init() {
+  vol_set(7);
+
+  /* UART0：TX=PB5 / RX=PB6。官方「串口设置」积木生成的字符代码就是
+   * 下面两行引脚复用 + begin，照抄即可（13/14 即 PB5/PB6）。
+   */
+  setPinFun(13, SECOND_FUNCTION);
+  setPinFun(14, SECOND_FUNCTION);
+  VOICE_PORT.begin(VOICE_BAUD);
+
+  /* 若改用串口1（PB7-TX1 / PC0-RX1）：VOICE_PORT 改成 Serial1，
+   * 并把上面两行换成 setPinFun(15, SECOND_FUNCTION) 与 (16, SECOND_FUNCTION)；
+   * 若改用串口2（PA5-TX2 / PA6-RX2）：VOICE_PORT 改成 Serial2，
+   * 换成 setPinFun(5, FORTH_FUNCTION) 与 (6, FORTH_FUNCTION)。
+   * 引脚号以天问Block 图形化「串口设置」实际生成的为准。
+   */
+
+  vTaskDelete(NULL);
+}
+
+/*============================================================================
+ * 上电初始化：词条模型元数据（天问Block 靠这些注释生成识别模型）
+ *   keyword : 唤醒词 / 命令词（元数据标签，官方英文例程同样写中文，勿改）
+ *   ASR     : 要识别的英文词条（小写，多词用空格；不能含汉字）
+ *   ASRTO   : 识别成功后自动播报的英文回复语（无需代码调用播放）
+ *   ID      : 识别标识 ID，即 ASR_CODE() 里的 snid，与中文版逐项相同
+ *============================================================================*/
+void setup() {
+  //{ID:0,keyword:"唤醒词",ASR:"hey robot",ASRTO:"I am here"}
+  //{ID:1,keyword:"唤醒词",ASR:"hello robot",ASRTO:"I am here"}
+  //{ID:2,keyword:"唤醒词",ASR:"hey buddy",ASRTO:"I am here"}
+  //{ID:3,keyword:"唤醒词",ASR:"hi desktop",ASRTO:"I am here"}
+
+  //{ID:4,keyword:"命令词",ASR:"forward",ASRTO:"Moving forward"}
+  //{ID:5,keyword:"命令词",ASR:"move forward",ASRTO:"Moving forward"}
+  //{ID:6,keyword:"命令词",ASR:"come here",ASRTO:"Coming"}
+  //{ID:7,keyword:"命令词",ASR:"backward",ASRTO:"Moving back"}
+  //{ID:8,keyword:"命令词",ASR:"move back",ASRTO:"Moving back"}
+  //{ID:9,keyword:"命令词",ASR:"go away",ASRTO:"Going away"}
+  //{ID:10,keyword:"命令词",ASR:"turn left",ASRTO:"Turning left"}
+  //{ID:11,keyword:"命令词",ASR:"go left",ASRTO:"Turning left"}
+  //{ID:12,keyword:"命令词",ASR:"to the left",ASRTO:"Turning left"}
+  //{ID:13,keyword:"命令词",ASR:"turn right",ASRTO:"Turning right"}
+  //{ID:14,keyword:"命令词",ASR:"go right",ASRTO:"Turning right"}
+  //{ID:15,keyword:"命令词",ASR:"to the right",ASRTO:"Turning right"}
+  //{ID:16,keyword:"命令词",ASR:"stop",ASRTO:"Stopping now"}
+  //{ID:17,keyword:"命令词",ASR:"do not move",ASRTO:"Stopping now"}
+  //{ID:18,keyword:"命令词",ASR:"halt",ASRTO:"Stopping now"}
+  //{ID:19,keyword:"命令词",ASR:"curious mode",ASRTO:"Curious mode on"}
+  //{ID:20,keyword:"命令词",ASR:"be curious",ASRTO:"Curious mode on"}
+  //{ID:21,keyword:"命令词",ASR:"explore",ASRTO:"Curious mode on"}
+  //{ID:22,keyword:"命令词",ASR:"wander around",ASRTO:"Curious mode on"}
+  //{ID:23,keyword:"命令词",ASR:"close curious mode",ASRTO:"Curious mode off"}
+  //{ID:24,keyword:"命令词",ASR:"stop exploring",ASRTO:"Curious mode off"}
+  //{ID:25,keyword:"命令词",ASR:"wiggle",ASRTO:"Wiggling"}
+  //{ID:26,keyword:"命令词",ASR:"move a bit",ASRTO:"Wiggling"}
+  //{ID:27,keyword:"命令词",ASR:"dance party",ASRTO:"Watch me dance"}
+}
+
+/** edittype="asr_procode" */
