@@ -1,6 +1,6 @@
 # Voice Module (ASR-PRO) Quick Start
 
-This folder contains the voice module source (`voice_module.hd`, `main.cpp`) used in the ESP32-C3 Mini Robot Car B. Follow the steps below to install the software, flash the module, and customize the wake words and voice commands.
+This folder contains the voice module source (`voice_module.hd`) used in the ESP32-C3 Mini Robot Car B. Follow the steps below to install the software, flash the module, and customize the wake words and voice commands.
 
 ## 1. Software Download
 
@@ -15,7 +15,7 @@ Download the ASR-PRO software from Google Drive:
 
 ## 3. Wake Word Modification
 
-Open `main.cpp` and edit the wake word entries inside `void setup()`:
+Open `voice_module.hd` and edit the wake word entries inside `void setup()`:
 
 ```cpp
 void setup() {
@@ -31,7 +31,7 @@ void setup() {
 
 ## 4. Action Command and Voice Feedback Modification
 
-Edit the command entries in `main.cpp`:
+Edit the command entries in `voice_module.hd`:
 
 ```cpp
 //{ID:4,keyword:"命令词",ASR:"forward",ASRTO:"Moving forward"}
