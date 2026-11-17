@@ -1,5 +1,6 @@
-1】Software download: http://twen51.com/new/twen51/art_show.php?id=230
+1】Software download: https://drive.google.com/file/d/19ujY1f2GoXHnFev5xYsjjI63T2qsZcQG/view?usp=sharing
 2】Flasher purchase: ASR-LINK downloader【CH340K】
+Purchase link：https://spotpear.com/shop/ESP32-mini-C3-AI-Toy-AI-Core-DeepSeek-XiaoZhi-DouBao-1.54-1.28-0.71-inch-LCD/ASR-LINK-ASRPRO-Core.html
 3】Wake word modification
 void setup() {
 //{ID:0,keyword:"唤醒词",ASR:"hey robot",ASRTO:"I am here"}
