@@ -1,0 +1,2 @@
+1】Each time you power on the device, hold the BOOT button, then press the RST button once; after entering download mode, proceed with flashing.
+2】When flashing, configure the Arduino tool properly. The specific configuration has been placed in the folder, tool.png.
