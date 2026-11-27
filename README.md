@@ -3,6 +3,8 @@
 ESP32-C3-Mini-Robot-Car-B [product purchase link](https://spotpear.com/shop/ESP32-C3-0.96-inch-Robot-LCD-Display.html)
 
 1】[Hardware wiring reference](Hardware)  [ （basic version）](Hardware/Basic%20Version-Wiring%20Diagram.png) / [（voice version）](Hardware/Voice%20Version-Wiring%20Diagram.png) and the [video](wiki-video.mp4)   
-2】Use the flashing [software ](Firmware/flash_download_tool/flash_download_tool/) flash [ ESP32C3 bin firmware ](Firmware/Firmware-Basic/ROBOOT.bin)（[refer to the flashing tutoria](https://spotpear.com/wiki/ESP32-mini-C3-AI-Toy-AI-Core-DeepSeek-XiaoZhi-DouBao-1.54-1.28-0.71-inch-LCD.html#】Download and open the burning software)）  
+2】Use the flashing [software ](Firmware/flash_download_tool/flash_download_tool/) flash [ ESP32C3 bin firmware ](Firmware/Firmware-Basic/ROBOOT.bin)（[refer to the flashing tutoria](https://spotpear.com/wiki/ESP32-mini-C3-AI-Toy-AI-Core-DeepSeek-XiaoZhi-DouBao-1.54-1.28-0.71-inch-LCD.html#%E3%80%91Download%20and%20open%20the%20burning%20software)）  
+3】Use [flashing software](Firmware/Firmware-Voice/For-Voice-Recognition-Module
+/makebin.exe) to flash the bin firmware onto the voice module (see flashing tutorial for reference) (only required for the voice version; not required for the non-voice version)  
 3】 Check the [Readme](Readme.txt) for mobile network control or voice control   
 4】Modify the main controller[ESP32C3 source code ](Source-Code/Desktop_Robot/)and modify the [voice module source code](Source-Code/voice-module/).((By default, you do not need to modify the source code; you only need to do so if you want to change your own functionality.))
